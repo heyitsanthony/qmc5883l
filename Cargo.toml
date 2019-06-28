@@ -1,0 +1,16 @@
+[package]
+authors = ["Anthony Romano <romanoanthony061@gmail.com>"]
+categories = ["embedded", "hardware-support", "no-std"]
+description = "An embedded rust driver for the QMC5883L magnetometer"
+documentation = "https://github.com/heyitsanthony/qmc5883l"
+keywords = ["embedded-hal-driver", "compass"]
+license = "AGPL-3.0-or-later"
+name = "qmc5883l"
+repository = "https://github.com/heyitsanthony/qmc5883l"
+version = "0.0.1"
+
+[dependencies]
+embedded-hal = "0.2.3"
+
+[dev_dependencies]
+linux-embedded-hal = "0.2.2"
