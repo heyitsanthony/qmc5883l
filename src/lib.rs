@@ -4,20 +4,21 @@
 //!
 //! [`embedded-hal`]: https://docs.rs/embedded-hal/~0.2
 
-#![deny(missing_docs)]
 #![no_std]
 
 extern crate embedded_hal as hal;
 
+use core::slice::from_mut;
+
 use hal::blocking::i2c::{Write, WriteRead};
 
-const I2C_ADDRESS: u8 = 0x0d;
+const SLAVE_ADDRESS: u8 = 0x0d;
 
 #[allow(dead_code)]
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone)]
 #[repr(u8)]
-enum Register {
+pub enum Register {
     DATA_OUT_X_L = 0,
     DATA_OUT_X_H = 1,
     DATA_OUT_Y_L = 2,
@@ -33,8 +34,8 @@ enum Register {
     CHIP_ID = 13,
 }
 
-const STATUS_OVL: u8 = 0b010;
-const STATUS_DRDY: u8 = 0b001;
+pub const STATUS_OVL: u8 = 0b010;
+pub const STATUS_DRDY: u8 = 0b001;
 
 const MODE_CONTINUOUS: u8 = 0b01;
 
@@ -78,6 +79,15 @@ pub enum FieldRange {
     Range8Gauss = 1 << 3,
 }
 
+impl FieldRange {
+    pub fn sensitive(self) -> i16 {
+        match self {
+            Self::Range2Gauss => 12000,
+            Self::Range8Gauss => 3000,
+        }
+    }
+}
+
 /// QMC5883L Error
 #[derive(Debug, Copy, Clone)]
 pub enum Error<E> {
@@ -98,23 +108,26 @@ impl<E> core::convert::From<E> for Error<E> {
 }
 
 /// QMC5883L driver
-pub struct QMC5883L<I2C> {
-    i2c: I2C,
+pub struct QMC5883L<I2C>(I2C);
+
+impl QMC5883L<()> {
+    pub fn probe<E>(i2c: &mut dyn WriteRead<Error = E>) -> Result<bool, E> {
+        let mut value = 0u8;
+        i2c.write_read(SLAVE_ADDRESS, &[Register::CHIP_ID as u8], from_mut(&mut value))?;
+        Ok(value == 0xff)
+    }
 }
 
-impl<I2C, E> QMC5883L<I2C>
-where
-    I2C: WriteRead<Error = E> + Write<Error = E>,
-{
+impl<I2C> QMC5883L<I2C> {
     /// Creates a new QMC5883L device from an I2C peripheral; begins with a soft reset.
-    pub fn new(i2c: I2C) -> Result<Self, Error<E>> {
-        let mut dev = QMC5883L { i2c: i2c };
-        let id = dev.read_u8(Register::CHIP_ID)?;
-        if id != 0xff {
-            return Err(Error::InvalidDevice(id));
-        }
-        dev.reset()?;
-        Ok(dev)
+    pub fn new(i2c: I2C) -> Self {
+        QMC5883L(i2c)
+    }
+}
+
+impl<I2C: WriteRead<Error = E> + Write<Error = E>, E> QMC5883L<I2C> {
+    pub fn into_inner(self) -> I2C {
+        self.0
     }
 
     /// Soft reset the device.
@@ -125,23 +138,23 @@ where
     }
 
     /// Set the device field range.
-    pub fn set_field_range(&mut self, rng: FieldRange) -> Result<(), E> {
+    pub fn set_field_range(&mut self, field_range: FieldRange) -> Result<(), E> {
         let ctrl1 = self.read_u8(Register::CONTROL1)?;
-        let v = (ctrl1 & !(FieldRange::Range8Gauss as u8)) | (rng as u8);
+        let v = (ctrl1 & !(FieldRange::Range8Gauss as u8)) | (field_range as u8);
         self.write_u8(Register::CONTROL1, v)
     }
 
     /// Set the device oversampling rate.
-    pub fn set_oversample(&mut self, osr: OversampleRate) -> Result<(), E> {
+    pub fn set_oversample(&mut self, rate: OversampleRate) -> Result<(), E> {
         let ctrl1 = self.read_u8(Register::CONTROL1)?;
-        let v = (ctrl1 & !(OversampleRate::Rate64 as u8)) | (osr as u8);
+        let v = (ctrl1 & !(OversampleRate::Rate64 as u8)) | (rate as u8);
         self.write_u8(Register::CONTROL1, v)
     }
 
     /// Set the device output data rate.
-    pub fn set_output_data_rate(&mut self, odr: OutputDataRate) -> Result<(), E> {
+    pub fn set_output_data_rate(&mut self, rate: OutputDataRate) -> Result<(), E> {
         let ctrl1 = self.read_u8(Register::CONTROL1)?;
-        let v = (ctrl1 & !(OutputDataRate::Rate200Hz as u8)) | (odr as u8);
+        let v = (ctrl1 & !(OutputDataRate::Rate200Hz as u8)) | (rate as u8);
         self.write_u8(Register::CONTROL1, v)
     }
 
@@ -168,36 +181,33 @@ where
     }
 
     /// Read temperature sensor; temperature coefficient is about 100 LSB/°C.
-    pub fn temp(&mut self) -> Result<i16, E> {
+    pub fn read_temperature(&mut self) -> Result<i16, E> {
         let temp_l = self.read_u8(Register::TOUT_L)? as i16;
         let temp_h = self.read_u8(Register::TOUT_H)? as i16;
         Ok((temp_h << 8) | temp_l)
     }
 
     /// Read raw (x,y,z) from magnetometer.
-    pub fn mag(&mut self) -> Result<(i16, i16, i16), Error<E>> {
-        let buf: &mut [u8; 7] = &mut [0; 7];
-        self.i2c
-            .write_read(I2C_ADDRESS, &[Register::STATUS as u8], buf)?;
-        let status = buf[0];
+    pub fn read_magnetism(&mut self) -> Result<(i16, i16, i16), Error<E>> {
+        let mut buf = [0u8; 8];
+        self.0.write_read(SLAVE_ADDRESS, &[Register::STATUS as u8], &mut buf[1..])?;
+        let status = buf[1];
         if (status & STATUS_DRDY) == 0 {
             return Err(Error::NotReady);
         } else if (status & STATUS_OVL) != 0 {
             return Err(Error::Overflow);
         }
-        let x = ((buf[2] as i16) << 8) | (buf[1] as i16);
-        let y = ((buf[4] as i16) << 8) | (buf[3] as i16);
-        let z = ((buf[6] as i16) << 8) | (buf[5] as i16);
-        Ok((x, y, z))
+        let result: [i16; 4] = unsafe { core::mem::transmute(buf) };
+        Ok((i16::from_le(result[1]), i16::from_le(result[2]), i16::from_le(result[3])))
     }
 
     fn read_u8(&mut self, reg: Register) -> Result<u8, E> {
-        let buf: &mut [u8; 1] = &mut [0];
-        self.i2c.write_read(I2C_ADDRESS, &[reg as u8], buf)?;
-        Ok(buf[0])
+        let mut value = 0u8;
+        self.0.write_read(SLAVE_ADDRESS, &[reg as u8], from_mut(&mut value))?;
+        Ok(value)
     }
 
     fn write_u8(&mut self, reg: Register, v: u8) -> Result<(), E> {
-        self.i2c.write(I2C_ADDRESS, &[reg as u8, v])
+        self.0.write(SLAVE_ADDRESS, &[reg as u8, v])
     }
 }

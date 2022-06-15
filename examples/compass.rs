@@ -15,14 +15,15 @@ fn main() {
         println!("usage: {} /dev/i2c-N declination_radians", args[0]);
         process::exit(1);
     }
-    let i2c_dev = linux_embedded_hal::I2cdev::new(&args[1]).unwrap();
+    let mut i2c_dev = linux_embedded_hal::I2cdev::new(&args[1]).unwrap();
     // Need correct magnetic declination for your location for accurate
     // readings. See http://www.magnetic-declination.com/
     let declination_rads = args[2].parse::<f32>().unwrap();
-    let mut dev = QMC5883L::new(i2c_dev).unwrap();
+    QMC5883L::probe(&mut i2c_dev).expect("Expected qmc5883l");
+    let mut dev = QMC5883L::new(i2c_dev);
     dev.continuous().unwrap();
     loop {
-        let (x, y, z) = dev.mag().unwrap();
+        let (x, y, z) = dev.read_magnetism().unwrap();
         let mut heading = (y as f32).atan2(x as f32) + declination_rads;
         if heading < 0.0 {
             heading += 2.0 * PI;

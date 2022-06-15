@@ -10,7 +10,7 @@ repository = "https://github.com/heyitsanthony/qmc5883l"
 version = "0.0.1"
 
 [dependencies]
-embedded-hal = "0.2.3"
+embedded-hal = "0.2"
 
 [dev_dependencies]
-linux-embedded-hal = "0.2.2"
+linux-embedded-hal = "0.2"
